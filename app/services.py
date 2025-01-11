@@ -1,18 +1,20 @@
 from langchain_core.messages import HumanMessage, AIMessage
 from typing import Optional, TypedDict, List, Set
 from app.config import llm
-import time
+
 
 class MessagesState:
     def __init__(self):
         self.messages: List[AIMessage | HumanMessage] = []
-        self.user_info: dict[str, str] = {}
+        self.user_info: dict[str, str] = {}  # Include candidateId in user_info
+        self.candidate_id: Optional[str] = None  # Explicitly store candidateId
         self.score: int = 0
         self.current_question: int = 0
-        self.total_questions: int = 20
+        self.total_questions: int = 10
         self.user_answers: List[str] = []
         self.correct_answers: List[str] = []
         self.asked_questions: Set[str] = set()  # Set for unique questions
+
 
 class FeedbackItem(TypedDict):
     question: str
@@ -20,120 +22,52 @@ class FeedbackItem(TypedDict):
     correct_answer: str
     is_correct: bool
 
+
 class FeedbackSummary(TypedDict):
     correct_count: int
     total_questions: int
     details: List[FeedbackItem]
     final_feedback: str
 
-def collect_user_info(
-    state: MessagesState,
-    user_name: str,
-    field: str,
-    experience: str,
-    years_of_experience: Optional[str] = None
-) -> MessagesState:
-    state.messages.append(AIMessage(content="What is your name?"))
-    state.messages.append(HumanMessage(content=user_name))
-    state.user_info['name'] = user_name
-
-    state.messages.append(AIMessage(content=f"Thanks, {user_name}! What’s your field of specialization?"))
-    state.messages.append(HumanMessage(content=field))
-    state.user_info['field'] = field
-
-    state.messages.append(AIMessage(content="Are you a fresher or experienced professional?"))
-    state.messages.append(HumanMessage(content=experience))
-    state.user_info['experience'] = experience
-
-    if experience.lower() == "experienced" and years_of_experience is not None:
-        state.messages.append(AIMessage(content="How many years of experience do you have?"))
-        state.messages.append(HumanMessage(content=years_of_experience))
-        state.user_info['years_of_experience'] = years_of_experience
-    elif experience.lower() == "experienced" and years_of_experience is None:
-        state.messages.append(AIMessage(content="How many years of experience do you have?"))
-        state.messages.append(HumanMessage(content="Not provided"))
-
-    return state
 
 def generate_question_with_llm(
     llm,
-    field: str,
+    job_title: str,
     experience: str,
     question_type: str,
     state: MessagesState
 ) -> str:
-    prompt_modifier = "Ensure that this question is different from any previous questions and covers a unique aspect of the topic."
+    prompt_modifier = (
+        f"The questions must be strictly related to the job title '{job_title}' and the candidate's experience level ({experience}). "
+        "Avoid generic, unrelated, or off-topic questions. Tailor the content to the technologies and challenges relevant to the job title."
+    )
 
     if question_type == "multiple-choice":
         prompt = (
-            f"Generate a unique multiple-choice question for an {experience} {field} professional. "
-            f"Include 4 options. Only provide the question and options without the answer or explanation. {prompt_modifier}"
+            f"Generate a unique multiple-choice question for a {experience} professional applying for the position of '{job_title}'. "
+            f"Include 4 plausible options, and ensure the question is highly relevant to the job title. "
+            f"Only provide the question and options without revealing the answer or explanation. "
+            f"{prompt_modifier}"
         )
     elif question_type == "theoretical":
         prompt = (
-            f"Generate a unique theoretical question for an {experience} {field} professional. "
-            f"Only provide the question without any answer or explanation. {prompt_modifier}"
+            f"Generate a unique theoretical question for a {experience} professional applying for the position of '{job_title}'. "
+            f"Ensure the question explores advanced or critical aspects of the role. Do not reveal the answer or explanation. "
+            f"{prompt_modifier}"
         )
     else:
-        raise ValueError(f"Invalid question_type: {question_type}. Expected 'multiple-choice' or 'theoretical'.")
+        raise ValueError(f"Unsupported question type: {question_type}")
 
-    response = llm.invoke([HumanMessage(content=prompt)])
-    question_content = response.content.strip()
-
-    while question_content in state.asked_questions:
+    for _ in range(5):
         response = llm.invoke([HumanMessage(content=prompt)])
         question_content = response.content.strip()
 
-    state.asked_questions.add(question_content)
-    return question_content
+        if question_content not in state.asked_questions:
+            state.asked_questions.add(question_content)
+            return question_content
 
-def ask_questions_one_by_one(
-    llm,
-    state: MessagesState,
-    field: str,
-    experience: str
-) -> MessagesState:
-    for i in range(10):
-        question_data = generate_question_with_llm(llm, field, experience, "multiple-choice", state)
-        state.messages.append(AIMessage(content=f"Multiple Choice {i+1}: {question_data}"))
-        print(f"Multiple Choice {i+1}: {question_data}")
-        user_answer = input(f"Your answer for question {i+1}: ")
-        state.messages.append(HumanMessage(content=user_answer))
-        state.user_answers.append(user_answer)
-        state.correct_answers.append("d")  # Simulated correct answer for demonstration
-        time.sleep(2)
+    raise ValueError("Unable to generate a unique question after multiple attempts.")
 
-    for i in range(10):
-        question_data = generate_question_with_llm(llm, field, experience, "theoretical", state)
-        state.messages.append(AIMessage(content=f"Theoretical Question {i+1}: {question_data}"))
-        print(f"Theoretical Question {i+1}: {question_data}")
-        user_answer = input(f"Your response for question {i+1}: ")
-        state.messages.append(HumanMessage(content=user_answer))
-        state.user_answers.append(user_answer)
-        state.correct_answers.append("response")  # Simulated correct response for demonstration
-        time.sleep(2)
-
-    return state
-
-def collect_answers_and_score(state: MessagesState) -> MessagesState:
-    correct_answers = 0
-    total_questions = len(state.user_answers)
-
-    for i in range(total_questions):
-        if state.user_answers[i] == state.correct_answers[i]:
-            correct_answers += 1
-
-    print("\nReview of your answers:")
-    for i in range(total_questions):
-        correctness = "Correct" if state.user_answers[i] == state.correct_answers[i] else "Wrong"
-        print(f"Question {i+1}: Your answer: {state.user_answers[i]} - {correctness}")
-
-    if correct_answers >= 16:
-        state.messages.append(AIMessage(content=f"Congratulations! You answered {correct_answers} out of {total_questions} correctly. You're invited for a further interview."))
-    else:
-        state.messages.append(AIMessage(content=f"You answered {correct_answers} out of {total_questions}. Keep practicing!"))
-
-    return state
 
 def score_and_provide_feedback(state: MessagesState) -> FeedbackSummary:
     correct_answers = 0
@@ -146,31 +80,66 @@ def score_and_provide_feedback(state: MessagesState) -> FeedbackSummary:
         "final_feedback": "",
     }
 
-    # Convert the set to a list to make it indexable
     asked_questions_list = list(state.asked_questions)
 
     for i in range(total_questions):
         question = asked_questions_list[i] if i < len(asked_questions_list) else ""
         user_answer = state.user_answers[i]
-        correct_answer = state.correct_answers[i] if i < len(state.correct_answers) else ""
-        is_correct = user_answer == correct_answer
 
+        # Use LLM to validate the answer
+        validation_prompt = (
+            f"Question: {question}\n"
+            f"User Answer: {user_answer}\n"
+            "Is the user's answer correct or incorrect? Provide a brief explanation and the correct answer."
+        )
+        response = llm.invoke([HumanMessage(content=validation_prompt)])
+
+        # Handle the LLM response properly
+        feedback = extract_feedback_from_response(response)
+
+        # Parse the LLM response to determine correctness
+        is_correct = "correct" in feedback.lower() and "incorrect" not in feedback.lower()
+        correct_answer = extract_correct_answer(feedback)
+
+        # Prepare feedback item
         feedback_item: FeedbackItem = {
             "question": question,
             "user_answer": user_answer,
-            "correct_answer": correct_answer,
+            "correct_answer": correct_answer if correct_answer else "Not provided",
             "is_correct": is_correct,
         }
 
         feedback_summary["details"].append(feedback_item)
+
         if is_correct:
             correct_answers += 1
 
+    # Update feedback summary
     feedback_summary["correct_count"] = correct_answers
     feedback_summary["final_feedback"] = (
-        f"Congratulations! You answered {correct_answers} out of {total_questions} correctly. You're invited for a further interview."
-        if correct_answers >= 16 else
-        f"You answered {correct_answers} out of {total_questions}. Keep practicing!"
+        f"Congratulations! You answered {correct_answers} out of {total_questions} correctly. "
+        f"Keep up the good work!" if correct_answers >= 6 else
+        f"You answered {correct_answers} out of {total_questions} correctly. "
+        f"Review the questions and improve your knowledge!"
     )
 
     return feedback_summary
+
+
+def extract_feedback_from_response(response) -> str:
+    """Extract feedback content from the LLM response."""
+    if isinstance(response, list) and len(response) > 0:
+        return response[0]["content"].strip() if "content" in response[0] else response[0].strip()
+    elif isinstance(response, dict) and "content" in response:
+        return response["content"].strip()
+    elif isinstance(response, str):
+        return response.strip()
+    else:
+        return "Unable to determine correctness. Please try again."
+
+
+def extract_correct_answer(feedback: str) -> Optional[str]:
+    """Extract the correct answer from the feedback content if available."""
+    if "correct answer:" in feedback.lower():
+        return feedback.split("Correct answer:")[-1].strip()
+    return None

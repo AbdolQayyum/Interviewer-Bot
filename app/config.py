@@ -13,4 +13,4 @@ if not api_key_str:
     raise ValueError("GEMINI_API_KEY not found. Please set it in your .env file or environment variables.")
 
 google_api_key = SecretStr(api_key_str)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=google_api_key)
+llm = ChatGoogleGenerativeAI(model="gemini-pro", api_key=google_api_key)
